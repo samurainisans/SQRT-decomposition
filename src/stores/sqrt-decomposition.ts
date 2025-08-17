@@ -1,73 +1,261 @@
-const MAXN = 10000
-const SQRSIZE = 100
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import type { 
+  SqrtDecompositionState, 
+  SqrtBlock, 
+  VisualizationStep,
+  UpdateOperation,
+  QueryOperation 
+} from '../types/sqrt-decomposition'
 
-const arr = new Array(MAXN)
-for (let i = 0; i < MAXN; i++) {
-  arr[i] = 0
-}
+export const useSqrtDecompositionStore = defineStore('sqrtDecomposition', () => {
+  const currentState = ref<SqrtDecompositionState | null>(null)
+  const visualizationSteps = ref<VisualizationStep[]>([])
+  const currentStepIndex = ref(-1)
+  const isInitialized = ref(false)
 
-const block = new Array(SQRSIZE)
-for (let i = 0; i < SQRSIZE; i++) {
-  block[i] = 0
-}
+  const blockSize = computed(() => currentState.value?.blockSize ?? 0)
+  const arraySize = computed(() => currentState.value?.arraySize ?? 0)
+  const blocks = computed(() => currentState.value?.blocks ?? [])
+  const originalArray = computed(() => currentState.value?.originalArray ?? [])
 
-const x = 0
+  function initialize(inputArray: number[]) {
+      const n = inputArray.length
+      const blockSize = Math.floor(Math.sqrt(n))
+      const blockCount = Math.ceil(n / blockSize)
+      
+      const blocks: SqrtBlock[] = []
+      
+      for (let i = 0; i < blockCount; i++) {
+        const startIndex = i * blockSize
+        const endIndex = Math.min(startIndex + blockSize - 1, n - 1)
+        let sum = 0
+        
+        for (let j = startIndex; j <= endIndex; j++) {
+          sum += inputArray[j]
+        }
+        
+        blocks.push({
+          blockIndex: i,
+          sum,
+          startIndex,
+          endIndex
+        })
+      }
 
-// функция для обновления значения
-// в конкретном индексе
-// массива
-function update(idx: number, val: number) {
-  const blockNumber = idx / x
-  block[blockNumber] += val - arr[idx]
-  arr[idx] = val
-}
-function query(l: number, r: number) {
-  let sum = 0
-  while (l < r && l % x != 0 && l != 0) {
-    // обход первого блока в диапазоне
-    sum += arr[l]
-    l++
-  }
-  while (l + x - 1 <= r) {
-    // обход полностью
-    // перекрывающихся блоков в диапазоне
-    sum += block[l / x]
-    l += x
-  }
-  while (l <= r) {
-    // обход последнего блока в диапазоне
-    sum += arr[l]
-    l++
-  }
-  return sum
-}
+      currentState.value = {
+        originalArray: [...inputArray],
+        blockSize,
+        blocks,
+        arraySize: n
+      }
 
-// заполняет значения в input[]
-function preprocess(input: number[], n: number) {
-  // инициализация указателя блока
-  let x = -1
+      visualizationSteps.value = [{
+        id: 'init',
+        type: 'init',
+        description: `Инициализация SQRT-декомпозиции для массива размером ${n}. Размер блока: ${blockSize}`,
+        state: { ...currentState.value },
+        highlightedIndices: [],
+        highlightedBlocks: []
+      }]
 
-  // вычисление размера блока
-  x = Math.floor(Math.sqrt(n))
-
-  // построение декомпозированного массива
-  for (let i = 0; i < n; i++) {
-    arr[i] = input[i]
-    if (i % x == 0) {
-      // вход в следующий блок
-      // увеличение указателя блока
-      x++
+      currentStepIndex.value = 0
+      isInitialized.value = true
     }
-    block[x] += arr[i]
+
+  function update(index: number, newValue: number): UpdateOperation {
+      if (!currentState.value) throw new Error('Store not initialized')
+      
+      const oldValue = currentState.value.originalArray[index]
+      const blockIndex = Math.floor(index / currentState.value.blockSize)
+      
+      const steps: VisualizationStep[] = []
+      
+      steps.push({
+        id: `update-${Date.now()}-1`,
+        type: 'update',
+        description: `Обновляем элемент по индексу ${index}: ${oldValue} → ${newValue}`,
+        state: { ...currentState.value },
+        highlightedIndices: [index],
+        highlightedBlocks: [blockIndex],
+        currentOperation: {
+          operationType: 'update',
+          params: [index, newValue]
+        }
+      })
+
+      currentState.value.originalArray[index] = newValue
+      currentState.value.blocks[blockIndex].sum += newValue - oldValue
+
+      steps.push({
+        id: `update-${Date.now()}-2`,
+        type: 'block_calculation',
+        description: `Обновляем сумму блока ${blockIndex}: ${currentState.value.blocks[blockIndex].sum - (newValue - oldValue)} → ${currentState.value.blocks[blockIndex].sum}`,
+        state: { ...currentState.value },
+        highlightedIndices: [index],
+        highlightedBlocks: [blockIndex],
+        currentOperation: {
+          operationType: 'update',
+          params: [index, newValue]
+        }
+      })
+
+      visualizationSteps.value.push(...steps)
+      currentStepIndex.value = visualizationSteps.value.length - 1
+
+      return {
+        index,
+        newValue,
+        oldValue,
+        steps
+      }
+    }
+
+  function query(left: number, right: number): QueryOperation {
+      if (!currentState.value) throw new Error('Store not initialized')
+      
+      const steps: VisualizationStep[] = []
+      let sum = 0
+      let l = left
+
+      steps.push({
+        id: `query-${Date.now()}-start`,
+        type: 'query',
+        description: `Начинаем запрос суммы на отрезке [${left}, ${right}]`,
+        state: { ...currentState.value },
+        highlightedIndices: Array.from({ length: right - left + 1 }, (_, i) => left + i),
+        highlightedBlocks: [],
+        currentOperation: {
+          operationType: 'query',
+          params: [left, right]
+        }
+      })
+
+      while (l <= right && l % currentState.value.blockSize !== 0) {
+        sum += currentState.value.originalArray[l]
+        steps.push({
+          id: `query-${Date.now()}-partial-${l}`,
+          type: 'query',
+          description: `Обрабатываем элемент ${l} в начале диапазона: ${currentState.value.originalArray[l]}`,
+          state: { ...currentState.value },
+          highlightedIndices: [l],
+          highlightedBlocks: [],
+          currentOperation: {
+            operationType: 'query',
+            params: [left, right],
+            result: sum
+          }
+        })
+        l++
+      }
+
+      while (l + currentState.value.blockSize - 1 <= right) {
+        const blockIndex = Math.floor(l / currentState.value.blockSize)
+        sum += currentState.value.blocks[blockIndex].sum
+        
+        steps.push({
+          id: `query-${Date.now()}-block-${blockIndex}`,
+          type: 'query',
+          description: `Используем сумму блока ${blockIndex}: ${currentState.value.blocks[blockIndex].sum}`,
+          state: { ...currentState.value },
+          highlightedIndices: [],
+          highlightedBlocks: [blockIndex],
+          currentOperation: {
+            operationType: 'query',
+            params: [left, right],
+            result: sum
+          }
+        })
+        
+        l += currentState.value.blockSize
+      }
+
+      while (l <= right) {
+        sum += currentState.value.originalArray[l]
+        steps.push({
+          id: `query-${Date.now()}-partial-end-${l}`,
+          type: 'query',
+          description: `Обрабатываем элемент ${l} в конце диапазона: ${currentState.value.originalArray[l]}`,
+          state: { ...currentState.value },
+          highlightedIndices: [l],
+          highlightedBlocks: [],
+          currentOperation: {
+            operationType: 'query',
+            params: [left, right],
+            result: sum
+          }
+        })
+        l++
+      }
+
+      steps.push({
+        id: `query-${Date.now()}-result`,
+        type: 'query',
+        description: `Результат запроса: ${sum}`,
+        state: { ...currentState.value },
+        highlightedIndices: Array.from({ length: right - left + 1 }, (_, i) => left + i),
+        highlightedBlocks: [],
+        currentOperation: {
+          operationType: 'query',
+          params: [left, right],
+          result: sum
+        }
+      })
+
+      visualizationSteps.value.push(...steps)
+      currentStepIndex.value = visualizationSteps.value.length - 1
+
+      return {
+        left,
+        right,
+        result: sum,
+        steps
+      }
+    }
+
+  function goToStep(stepIndex: number) {
+      if (stepIndex >= 0 && stepIndex < visualizationSteps.value.length) {
+        currentStepIndex.value = stepIndex
+        currentState.value = { ...visualizationSteps.value[stepIndex].state }
+      }
+    }
+
+  function nextStep() {
+      if (currentStepIndex.value < visualizationSteps.value.length - 1) {
+        currentStepIndex.value++
+        currentState.value = { ...visualizationSteps.value[currentStepIndex.value].state }
+      }
+    }
+
+  function previousStep() {
+      if (currentStepIndex.value > 0) {
+        currentStepIndex.value--
+        currentState.value = { ...visualizationSteps.value[currentStepIndex.value].state }
+      }
+    }
+
+  function reset() {
+      currentState.value = null
+      visualizationSteps.value = []
+      currentStepIndex.value = -1
+      isInitialized.value = false
+    }
+
+  return {
+    currentState,
+    visualizationSteps,
+    currentStepIndex,
+    isInitialized,
+    blockSize,
+    arraySize,
+    blocks,
+    originalArray,
+    initialize,
+    update,
+    query,
+    goToStep,
+    nextStep,
+    previousStep,
+    reset
   }
-}
-
-const input = [1, 5, 2, 4, 6, 1, 3, 5, 7, 10]
-const n = input.length
-
-preprocess(input, n)
-
-console.log('query(3,7) : ' + query(3, 7))
-console.log('query(4,4) : ' + query(4, 4))
-update(6, 0)
-console.log('query(5,5) : ' + query(5, 5))
+})
